@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""
+gpedia - CLI for Grokipedia lookups
+
+Usage:
+    gpedia <topic>              Look up a topic
+    gpedia <topic> | less       Pipe through pager
+    gpedia <topic> --json       Output raw JSON
+    gpedia <topic> --refs       Include references
+    gpedia <topic> --short      Truncate to ~500 words
+"""
+
+import argparse
+import json
+import re
+import sys
+import textwrap
+from urllib.parse import quote
+from urllib.request import urlopen, Request
+from urllib.error import HTTPError, URLError
+
+API_BASE = "https://grokipedia-api.vercel.app"
+
+# ANSI colors (disabled if not a tty or NO_COLOR set)
+def supports_color():
+    import os
+    if os.environ.get("NO_COLOR"):
+        return False
+    if not sys.stdout.isatty():
+        return False
+    return True
+
+COLORS = supports_color()
+
+BOLD = "\033[1m" if COLORS else ""
+DIM = "\033[2m" if COLORS else ""
+CYAN = "\033[36m" if COLORS else ""
+YELLOW = "\033[33m" if COLORS else ""
+GREEN = "\033[32m" if COLORS else ""
+RESET = "\033[0m" if COLORS else ""
+
+
+def slugify(topic: str) -> str:
+    """Convert topic to URL slug format."""
+    # Replace spaces with underscores, lowercase
+    slug = topic.strip().replace(" ", "_")
+    # URL encode for safety
+    return quote(slug, safe="_")
+
+
+def fetch_page(slug: str, refs: bool = False, truncate: int = None) -> dict:
+    """Fetch page from Grokipedia API."""
+    url = f"{API_BASE}/page/{slug}?extract_refs=true"
+    if refs:
+        url += "&citations=true"
+    if truncate:
+        url += f"&truncate={truncate}"
+
+    req = Request(url, headers={"User-Agent": "gpedia-cli/1.0"})
+
+    try:
+        with urlopen(req, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    except URLError as e:
+        print(f"{YELLOW}Error:{RESET} Could not connect to API: {e.reason}", file=sys.stderr)
+        sys.exit(1)
+
+
+def wrap_text(text: str, width: int = 80) -> str:
+    """Wrap text preserving paragraphs."""
+    paragraphs = text.split("\n\n")
+    wrapped = []
+    for para in paragraphs:
+        # Preserve single newlines within paragraphs as soft breaks
+        lines = para.split("\n")
+        joined = " ".join(line.strip() for line in lines if line.strip())
+        if joined:
+            wrapped.append(textwrap.fill(joined, width=width))
+    return "\n\n".join(wrapped)
+
+
+def format_references(refs: list) -> str:
+    """Format references section."""
+    if not refs:
+        return ""
+
+    lines = [f"\n{BOLD}References{RESET}", "─" * 40]
+    for ref in refs:
+        num = ref.get("number", "?")
+        url = ref.get("url", "")
+        if url:
+            lines.append(f"{DIM}[{num}]{RESET} {url}")
+        else:
+            lines.append(f"{DIM}[{num}]{RESET} (no URL)")
+    return "\n".join(lines)
+
+
+def format_output(page: dict, show_refs: bool = False) -> str:
+    """Format page for terminal display."""
+    title = page.get("title", "Unknown")
+    content = page.get("content_text", "")
+    url = page.get("url", "")
+    word_count = page.get("word_count", 0)
+    refs = page.get("references", [])
+
+    # Header
+    output = []
+    output.append(f"{BOLD}{CYAN}{title}{RESET}")
+    output.append(f"{DIM}{url}{RESET}")
+    output.append(f"{DIM}{word_count} words{RESET}")
+    output.append("═" * min(len(title) + 4, 80))
+    output.append("")
+
+    # Content - wrap for readability
+    wrapped = wrap_text(content, width=78)
+    output.append(wrapped)
+
+    # References
+    if show_refs and refs:
+        output.append(format_references(refs))
+
+    return "\n".join(output)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Look up topics on Grokipedia",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  gpedia "Albert Einstein"
+  gpedia stoicism --refs
+  gpedia "quantum mechanics" --short
+  gpedia philosophy | less
+  gpedia "roman empire" --json | jq .word_count
+        """
+    )
+    parser.add_argument("topic", nargs="+", help="Topic to look up")
+    parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    parser.add_argument("--refs", action="store_true", help="Include references")
+    parser.add_argument("--short", action="store_true", help="Truncate output (~500 words)")
+    parser.add_argument("--truncate", type=int, metavar="N", help="Truncate to N characters")
+
+    args = parser.parse_args()
+
+    # Join topic words
+    topic = " ".join(args.topic)
+    slug = slugify(topic)
+
+    # Determine truncation
+    truncate = None
+    if args.short:
+        truncate = 3000  # ~500 words
+    elif args.truncate:
+        truncate = args.truncate
+
+    # Fetch
+    page = fetch_page(slug, refs=args.refs, truncate=truncate)
+
+    if page is None:
+        print(f"{YELLOW}Not found:{RESET} No page for '{topic}'", file=sys.stderr)
+        print(f"{DIM}Try a different spelling or topic{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    # Output
+    if args.json:
+        print(json.dumps(page, indent=2))
+    else:
+        print(format_output(page, show_refs=args.refs))
+
+
+if __name__ == "__main__":
+    main()
