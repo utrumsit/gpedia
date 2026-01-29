@@ -21,9 +21,8 @@ from urllib.error import HTTPError, URLError
 
 # API endpoints - can switch between original and fork
 API_ORIGINAL = "https://grokipedia-api.vercel.app"
-# To use fork: deploy utrumsit/grokipedia-api to Vercel and update this URL
-API_FORK = None  # Set after deploying: "https://your-deploy.vercel.app"
-API_BASE = API_ORIGINAL  # Default
+API_FORK = "https://grokipedia-api-gamma.vercel.app"  # Fork with markdown support
+API_BASE = API_FORK  # Default to fork (better output)
 
 # ANSI colors (disabled if not a tty or NO_COLOR set)
 def supports_color():
