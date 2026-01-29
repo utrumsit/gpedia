@@ -19,7 +19,11 @@ from urllib.parse import quote
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 
-API_BASE = "https://grokipedia-api.vercel.app"
+# API endpoints - can switch between original and fork
+API_ORIGINAL = "https://grokipedia-api.vercel.app"
+# To use fork: deploy utrumsit/grokipedia-api to Vercel and update this URL
+API_FORK = None  # Set after deploying: "https://your-deploy.vercel.app"
+API_BASE = API_ORIGINAL  # Default
 
 # ANSI colors (disabled if not a tty or NO_COLOR set)
 def supports_color():
@@ -206,13 +210,36 @@ def format_references(refs: list) -> str:
     return "\n".join(lines)
 
 
-def format_output(page: dict, show_refs: bool = False) -> str:
+def format_markdown(md: str) -> str:
+    """Convert markdown to terminal-formatted text with ANSI codes."""
+    lines = []
+    for line in md.split('\n'):
+        # Headers
+        if line.startswith('### '):
+            lines.append(f"\n{BOLD}{MAGENTA}{line[4:]}{RESET}")
+        elif line.startswith('## '):
+            lines.append(f"\n{BOLD}{CYAN}{line[3:]}{RESET}")
+        elif line.startswith('# '):
+            lines.append(f"\n{BOLD}{line[2:]}{RESET}")
+        else:
+            # Convert *italic* to ANSI italic
+            line = re.sub(r'\*([^*]+)\*', f'{ITALIC}\\1{RESET}', line)
+            # Convert **bold** to ANSI bold
+            line = re.sub(r'\*\*([^*]+)\*\*', f'{BOLD}\\1{RESET}', line)
+            lines.append(line)
+    return '\n'.join(lines)
+
+
+def format_output(page: dict, show_refs: bool = False, use_markdown: bool = True) -> str:
     """Format page for terminal display."""
     title = page.get("title", "Unknown")
-    content = page.get("content_text", "")
     url = page.get("url", "")
     word_count = page.get("word_count", 0)
     refs = page.get("references", [])
+
+    # Prefer markdown if available (from fork API)
+    content_md = page.get("content_markdown")
+    content_text = page.get("content_text", "")
 
     # Header
     output = []
@@ -222,11 +249,15 @@ def format_output(page: dict, show_refs: bool = False) -> str:
     output.append("═" * min(len(title) + 4, 80))
     output.append("")
 
-    # Clean up content (remove metadata, fix orphans, detect headers)
-    cleaned = clean_content(content, title)
+    if use_markdown and content_md:
+        # Use pre-formatted markdown from API
+        formatted = format_markdown(content_md)
+        wrapped = wrap_text(formatted, width=78)
+    else:
+        # Fallback: clean up plain text (for original API)
+        cleaned = clean_content(content_text, title)
+        wrapped = wrap_text(cleaned, width=78)
 
-    # Wrap for readability
-    wrapped = wrap_text(cleaned, width=78)
     output.append(wrapped)
 
     # References
@@ -254,8 +285,19 @@ Examples:
     parser.add_argument("--refs", action="store_true", help="Include references")
     parser.add_argument("--short", action="store_true", help="Truncate output (~500 words)")
     parser.add_argument("--truncate", type=int, metavar="N", help="Truncate to N characters")
+    parser.add_argument("--api", choices=["original", "fork"], default="original",
+                       help="API to use: 'original' or 'fork' (with markdown support)")
 
     args = parser.parse_args()
+
+    # Set API base URL
+    global API_BASE
+    if args.api == "fork":
+        if not API_FORK:
+            print(f"{YELLOW}Error:{RESET} Fork API not configured.", file=sys.stderr)
+            print(f"{DIM}Deploy utrumsit/grokipedia-api to Vercel, then update API_FORK in gpedia{RESET}", file=sys.stderr)
+            sys.exit(1)
+        API_BASE = API_FORK
 
     # Join topic words
     topic = " ".join(args.topic)
